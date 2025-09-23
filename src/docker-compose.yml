@@ -1,0 +1,172 @@
+services:
+  omejdn:
+    image: nginx:1.25.3
+    container_name: omejdn
+    ports:
+      - 80:80
+      - 443:443
+    environment:
+      - OMEJDN_DOMAIN=${OMEJDN_DOMAIN}
+      - OMEJDN_PATH=${OMEJDN_PATH}
+      - UI_PATH=${UI_PATH}
+    volumes:
+      - ./DAPS/nginx.conf:/etc/nginx/templates/default.conf.template
+      - ./DAPS/keys/TLS/daps.cert:/etc/nginx/daps.cert
+      - ./DAPS/keys/TLS/daps.key:/etc/nginx/daps.key
+    networks: [local]
+
+  omejdn-server:
+    image: ghcr.io/fraunhofer-aisec/omejdn-server:${OMEJDN_VERSION}
+    container_name: omejdn-server
+    environment:
+      - OMEJDN_ISSUER=${OMEJDN_ISSUER}
+      - OMEJDN_FRONT_URL=${OMEJDN_ISSUER}
+      - OMEJDN_OPENID=true
+      - OMEJDN_ENVIRONMENT=${OMEJDN_ENVIRONMENT}
+      - OMEJDN_ACCEPT_AUDIENCE=idsc:IDS_CONNECTORS_ALL
+      - OMEJDN_DEFAULT_AUDIENCE=idsc:IDS_CONNECTORS_ALL
+      - OMEJDN_ADMIN=${ADMIN_USERNAME}:${ADMIN_PASSWORD}
+    volumes:
+      - ./DAPS/config:/opt/config
+      - ./DAPS/keys:/opt/keys
+    networks: [local]
+
+  omejdn-ui:
+    image: ghcr.io/fraunhofer-aisec/omejdn-ui:${UI_VERSION}
+    container_name: omejdn-ui
+    environment:
+      - OIDC_ISSUER=${OMEJDN_ISSUER}
+      - API_URL=${OMEJDN_ISSUER}/api/v1
+      - CLIENT_ID=adminUI
+    networks: [local]
+
+  postgresa:
+    image: postgres:13-bullseye
+    container_name: postgresa-container
+    ports: ["5432:5432"]
+    env_file:
+      - ./env/postgresA.env                       # ADDED
+    volumes:
+      - connector-dataa:/var/lib/postgresql/data
+    networks: [local]
+
+  postgresb:
+    image: postgres:13-bullseye
+    container_name: postgresb-container
+    ports: ["5433:5432"]
+    env_file:
+      - ./env/postgresB.env                       # ADDED
+    volumes:
+      - connector-datab:/var/lib/postgresql/data
+    networks: [local]
+
+  connectora:
+    image: ghcr.io/international-data-spaces-association/dataspace-connector:8.0.2
+    container_name: connectora
+    ports: ["8080:8080"]
+    environment:
+      - BOOTSTRAP_ENABLED=true
+      - DAPS_URL=https://omejdn
+      - DAPS_TOKEN_URL=https://omejdn/auth/token
+      - DAPS_KEY_URL=https://omejdn/auth/jwks.json
+      - DAPS_INCOMING_DAT_DEFAULT_WELLKNOWN=/jwks.json
+      # Timeouts for HTTP requests
+      - HTTP_TIMEOUT_CONNECT=20000
+      - HTTP_TIMEOUT_READ=20000
+      - HTTP_TIMEOUT_WRITE=20000
+      - HTTP_TIMEOUT_CALL=20000
+    env_file:
+      - ./env/dataspaceconnectorA.env
+    volumes:
+      - ./DataspaceConnectorA/conf/config.json:/config/config.json
+      - ./DataspaceConnectorA/conf/connectorA.p12:/conf/connectorA.p12
+      - ./DataspaceConnectorA/conf/truststore.p12:/config/truststore.p12
+    networks: [local]
+    depends_on: [postgresa]
+
+  connectorb:
+    image: ghcr.io/international-data-spaces-association/dataspace-connector:8.0.2
+    container_name: connectorb
+    ports: ["8081:8080"]
+    environment:
+      - DAPS_URL=https://omejdn
+      - DAPS_TOKEN_URL=https://omejdn/auth/token
+      - DAPS_KEY_URL=https://omejdn/auth/jwks.json
+      - DAPS_INCOMING_DAT_DEFAULT_WELLKNOWN=/jwks.json
+      # Timeouts for HTTP requests
+      - HTTP_TIMEOUT_CONNECT=20000
+      - HTTP_TIMEOUT_READ=20000
+      - HTTP_TIMEOUT_WRITE=20000
+      - HTTP_TIMEOUT_CALL=20000
+    env_file:
+      - ./env/dataspaceconnectorB.env
+    volumes:
+      - ./DataspaceConnectorB/conf/config.json:/config/config.json
+      - ./DataspaceConnectorB/conf/connectorB.p12:/conf/connectorB.p12
+      - ./DataspaceConnectorB/conf/truststore.p12:/config/truststore.p12
+    networks: [local]
+    depends_on: [postgresb]
+
+  broker-reverseproxy:
+    image: idstestbed/mdb-reverseproxy:5.0.3
+    container_name: broker-reverseproxy
+    volumes:
+      - ./MetadataBroker/server.crt:/etc/cert/server.crt
+      - ./MetadataBroker/server.key:/etc/cert/server.key
+    ports:
+      - "444:443"
+      - "81:80"
+    networks: [local]
+
+  broker-core:
+    image: idstestbed/metadatabroker-core:5.0.3
+    container_name: broker-core
+    volumes:
+      - ./MetadataBroker/isstbroker-keystore.jks:/etc/cert/isstbroker-keystore.jks
+    environment:
+      - SPARQL_ENDPOINT=http://broker-fuseki:3030/connectorData
+      - ELASTICSEARCH_HOSTNAME=broker-elasticsearch
+      - SHACL_VALIDATION=true
+      - DAPS_VALIDATE_INCOMING=true
+      - COMPONENT_URI=https://broker-reverseproxy/
+      - COMPONENT_CATALOGURI=https://broker-reverseproxy/connectors/
+      - DAPS_URL=https://omejdn/auth/token
+    expose: ["8080"]
+    networks: [local]
+
+  broker-fuseki:
+    image: idstestbed/mdb-fuseki:5.0.3
+    container_name: broker-fuseki
+    volumes:
+      - broker-fuseki:/fuseki
+    expose: ["3030"]
+    networks: [local]
+
+  ui-a:                                          # ADDED
+    image: ghcr.io/international-data-spaces-association/dataspace-connector-ui:9.0.0
+    container_name: ui-a
+    ports: ["8083:8083"]
+    env_file:
+      - ./env/ui-a.env                            # ADDED
+    depends_on: [connectora]
+    networks: [local]
+    restart: always
+
+  ui-b:                                          # ADDED
+    image: ghcr.io/international-data-spaces-association/dataspace-connector-ui:9.0.0
+    container_name: ui-b
+    ports: ["8084:8083"]
+    env_file:
+      - ./env/ui-b.env                            # ADDED
+    depends_on: [connectorb]
+    networks: [local]
+    restart: always
+
+volumes:
+  broker-fuseki: {}
+  connector-dataa: {}
+  connector-datab: {}
+
+networks:
+  local:
+    driver: bridge
